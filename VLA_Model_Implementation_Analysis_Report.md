@@ -1,6 +1,11 @@
 # GR00T N1.6 VLA 모델 구현 상세 분석 보고서
 
+> **NVIDIA Isaac GR00T N1.6** — Vision-Language-Action (VLA) 모델의 아키텍처, 데이터 흐름, 학습 로직에 대한 심층 기술 분석
+
+---
+
 ## 목차
+
 1. [프로젝트 오버뷰 & 구조](#1-프로젝트-오버뷰--구조)
 2. [모델 아키텍처 상세 분석](#2-모델-아키텍처-상세-분석)
 3. [데이터 흐름 및 텐서 쉐이프](#3-데이터-흐름-및-텐서-쉐이프)
@@ -11,69 +16,61 @@
 
 ## 1. 프로젝트 오버뷰 & 구조
 
-### 1.1 프로젝트 핵심 목적
+### 1.1 핵심 목적
 
-**NVIDIA Isaac GR00T N1.6**는 범용 휴머노이드 로봇 기술을 위한 오픈소스 Vision-Language-Action (VLA) 모델입니다. 이 모델은:
+GR00T N1.6은 **범용 휴머노이드 로봇 스킬**을 위한 오픈 VLA(Vision-Language-Action) 모델입니다. 이 모델은 다음과 같은 과정을 통해 로봇을 제어합니다:
 
-- **멀티모달 입력**: 이미지(비전), 언어 명령어, 로봇 상태(state)를 통합 처리
-- **크로스 임바디먼트(Cross-Embodiment)**: 다양한 로봇 플랫폼에 적응 가능한 통합 모델
-- **Diffusion 기반 Action 생성**: Flow Matching 기법을 활용한 연속적 action trajectory 예측
-- **3B 파라미터 규모**: VLM backbone + Diffusion Transformer로 구성
+1. **이미지(Vision)** 관측과 **자연어(Language)** 명령을 입력으로 받음
+2. Vision-Language Model (VLM)을 통해 멀티모달 이해를 수행
+3. **Diffusion Transformer (DiT)** 기반 Action Head에서 **Flow Matching** 기법으로 연속적 로봇 액션을 디노이징(denoise)하여 생성
 
-모델은 10,000+ 시간의 로봇 데모 데이터로 사전 학습되었으며, fine-tuning을 통해 특정 작업에 적응할 수 있습니다.
-
-### 1.2 폴더 구조
+### 1.2 주요 폴더 구조
 
 ```
-gr00t/
-├── model/                          # 모델 정의
-│   ├── gr00t_n1d6/                 # N1.6 모델 구현
-│   │   ├── gr00t_n1d6.py          # 메인 모델 클래스
-│   │   ├── processing_gr00t_n1d6.py # 데이터 전처리 및 collator
-│   │   └── image_augmentations.py  # 이미지 증강
-│   ├── modules/                    # 모델 구성 요소
-│   │   ├── eagle_backbone.py       # Vision-Language Backbone
-│   │   ├── dit.py                  # Diffusion Transformer
-│   │   ├── embodiment_conditioned_mlp.py # Multi-embodiment projectors
-│   │   └── nvidia/Eagle-Block2A-2B-v2/ # Eagle VLM 모델
-│   └── base/
-│       └── model_pipeline.py       # 학습 파이프라인 추상화
-├── data/                           # 데이터 로딩
-│   ├── dataset/
-│   │   ├── factory.py              # 데이터셋 팩토리
-│   │   ├── sharded_mixture_dataset.py
-│   │   └── lerobot_episode_loader.py
-│   ├── collator/
-│   │   └── collators.py            # 데이터 배치 구성
-│   └── state_action/
-│       └── state_action_processor.py # State/Action 정규화
-├── experiment/                     # 학습 스크립트
-│   ├── launch_finetune.py          # Fine-tuning 진입점
-│   ├── launch_train.py             # Full training 진입점
-│   ├── trainer.py                  # Custom HuggingFace Trainer
-│   └── experiment.py               # 실험 실행 로직
-├── configs/                        # 설정 파일
-│   ├── model/gr00t_n1d6.py        # 모델 설정
-│   ├── data/data_config.py        # 데이터 설정
-│   └── training/training_config.py # 학습 설정
-└── eval/                           # 평가 및 추론
-    ├── rollout_policy.py           # Policy rollout
-    ├── run_gr00t_server.py         # Policy 서버 (추론 진입점)
-    └── open_loop_eval.py           # 오픈루프 평가
-
-examples/                           # 각종 벤치마크 예제
-scripts/deployment/                 # TensorRT 등 배포 스크립트
+Isaac-GR00T/
+├── gr00t/
+│   ├── configs/                    # 설정(Config) 모듈
+│   │   ├── base_config.py          #   통합 Config 클래스 (Model + Data + Training)
+│   │   ├── model/gr00t_n1d6.py     #   모델 하이퍼파라미터 (Gr00tN1d6Config)
+│   │   ├── training/training_config.py  # 학습 하이퍼파라미터
+│   │   └── data/data_config.py     #   데이터셋 설정
+│   ├── model/                      # 모델 정의 모듈
+│   │   ├── gr00t_n1d6/
+│   │   │   ├── gr00t_n1d6.py       #   ★ 메인 모델 클래스 (Gr00tN1d6, Gr00tN1d6ActionHead)
+│   │   │   ├── processing_gr00t_n1d6.py  # 데이터 전처리/후처리 프로세서
+│   │   │   └── setup.py            #   모델 파이프라인 (Gr00tN1d6Pipeline)
+│   │   ├── modules/
+│   │   │   ├── eagle_backbone.py    #   ★ Vision-Language 백본 (EagleBackbone)
+│   │   │   ├── dit.py              #   ★ Diffusion Transformer (DiT, AlternateVLDiT)
+│   │   │   ├── embodiment_conditioned_mlp.py  # 멀티 에이전트 MLP 모듈
+│   │   │   └── nvidia/Eagle-Block2A-2B-v2/    # Eagle VLM 원본 구현
+│   │   └── base/model_pipeline.py  #   파이프라인 베이스 클래스
+│   ├── data/                       # 데이터 로딩 모듈
+│   │   ├── dataset/
+│   │   │   ├── factory.py          #   데이터셋 팩토리
+│   │   │   ├── sharded_single_step_dataset.py  # 단일 스텝 샤딩 데이터셋
+│   │   │   └── lerobot_episode_loader.py       # LeRobot 에피소드 로더
+│   │   ├── collator/collators.py   #   데이터 콜레이터
+│   │   └── state_action/           #   상태/액션 정규화 처리
+│   ├── experiment/                 # 학습 실험 관리
+│   │   ├── experiment.py           #   ★ 학습 진입점 (run 함수)
+│   │   ├── trainer.py              #   ★ 커스텀 Trainer (Gr00tTrainer)
+│   │   ├── launch_finetune.py      #   파인튜닝 런처
+│   │   └── launch_train.py         #   학습 런처
+│   └── policy/
+│       └── gr00t_policy.py         #   ★ 추론 정책 (Gr00tPolicy)
+├── examples/                       # 다양한 로봇/환경 파인튜닝 예제
+└── scripts/deployment/             # 배포/추론 스크립트
 ```
 
-### 1.3 주요 진입점 (Entry Points)
+### 1.3 진입점(Entry Point) 파일
 
-| 목적 | 파일 경로 | 설명 |
-|------|----------|------|
-| **Fine-tuning** | `gr00t/experiment/launch_finetune.py` | 사전학습된 모델을 특정 embodiment에 fine-tune |
-| **Full Training** | `gr00t/experiment/launch_train.py` | 처음부터 또는 커스텀 설정으로 학습 |
-| **Inference (Server)** | `gr00t/eval/run_gr00t_server.py` | Policy 서버 실행 (REST API) |
-| **Standalone Inference** | `scripts/deployment/standalone_inference_script.py` | 단일 추론 스크립트 |
-| **Open-loop Evaluation** | `gr00t/eval/open_loop_eval.py` | 데이터셋 대비 action 정확도 측정 |
+| 기능 | 파일 | 설명 |
+|------|------|------|
+| **학습 (Training)** | `gr00t/experiment/launch_finetune.py` | 파인튜닝 CLI 진입점. `tyro` 기반 설정 후 `experiment.py:run()` 호출 |
+| **학습 루프** | `gr00t/experiment/experiment.py` | HuggingFace `TrainingArguments` + `Gr00tTrainer`로 학습 실행 |
+| **추론 (Inference)** | `gr00t/policy/gr00t_policy.py` | `Gr00tPolicy.get_action()`으로 관측 -> 액션 생성 |
+| **데이터 로딩** | `gr00t/data/dataset/sharded_single_step_dataset.py` | `ShardedSingleStepDataset`로 에피소드를 단일 스텝 단위로 샤딩 |
 
 ---
 
@@ -81,1054 +78,620 @@ scripts/deployment/                 # TensorRT 등 배포 스크립트
 
 ### 2.1 Core Class: `Gr00tN1d6`
 
-**파일**: `gr00t/model/gr00t_n1d6/gr00t_n1d6.py`
+**파일:** `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` (라인 411-539)
 
-**메인 클래스**: `Gr00tN1d6(PreTrainedModel)`
+`Gr00tN1d6`는 HuggingFace `PreTrainedModel`을 상속하며, 전체 VLA 파이프라인의 최상위 모델 클래스입니다. 이 클래스는 두 개의 핵심 하위 모듈로 구성됩니다:
 
-이 클래스는 HuggingFace `PreTrainedModel`을 상속받아 표준 인터페이스를 제공합니다.
-
-```python
-class Gr00tN1d6(PreTrainedModel):
-    config_class = Gr00tN1d6Config
-    
-    def __init__(self, config, transformers_loading_kwargs):
-        super().__init__(config)
-        self.backbone = EagleBackbone(...)      # Vision-Language Encoder
-        self.action_head = Gr00tN1d6ActionHead(...)  # Diffusion-based Action Decoder
-        self.collator = Gr00tN1d6DataCollator(...)   # Data preprocessing
+```
+Gr00tN1d6 (PreTrainedModel)
+├── backbone: EagleBackbone       # Vision-Language 인코더
+├── action_head: Gr00tN1d6ActionHead  # Flow Matching Diffusion Policy
+└── collator: Gr00tN1d6DataCollator   # 데이터 콜레이션
 ```
 
-### 2.2 Components: 모델 구성 요소
+### 2.2 Component 1 — Vision-Language Backbone (`EagleBackbone`)
 
-모델은 크게 **3개의 주요 모듈**로 구성됩니다:
+**파일:** `gr00t/model/modules/eagle_backbone.py`
 
-#### 2.2.1 Vision-Language Backbone: `EagleBackbone`
+Eagle은 NVIDIA의 Cosmos-Reason-2B VLM 변형으로, 내부적으로 다음 3개의 서브 모듈을 포함합니다:
 
-**파일**: `gr00t/model/modules/eagle_backbone.py`
+| 서브 모듈 | 역할 | 구현 |
+|-----------|------|------|
+| `vision_model` | 이미지 인코딩 (SigLIP-2 기반) | `Siglip2VisionModel` (Flash Attention 2) |
+| `mlp1` | Vision-to-Language 프로젝터 | `LayerNorm → Linear → GELU → Linear` (pixel unshuffle 후) |
+| `language_model` | 텍스트 이해 및 멀티모달 융합 | `Qwen2ForCausalLM` (2B 파라미터급) |
 
-**역할**: 이미지와 텍스트를 통합된 임베딩 공간으로 인코딩
+**핵심 설계 결정:**
 
-**구조**:
-- **Vision Model**: SigLIP 기반 비전 인코더 (NVIDIA Cosmos-Reason-2B VLM의 변형)
-- **Language Model**: 2B 파라미터 언어 모델 (16개 레이어 중 상위 4개 레이어만 사용)
-- **MLP Projector** (`mlp1`): Vision feature를 Language embedding space로 투영
+- **select_layer = 16**: LLM의 전체 레이어 중 16번째까지만 사용하고, 나머지는 제거합니다. 이는 액션 생성에 필요한 중간 표현만 추출하기 위함입니다 (라인 52-53):
+  ```python
+  while len(self.model.language_model.model.layers) > select_layer:
+      self.model.language_model.model.layers.pop(-1)
+  ```
+- **tune_top_llm_layers = 4**: N1.6에서는 VLM의 상위 4개 LLM 레이어를 학습 가능하도록 설정합니다 (N1.5의 post-VLM 4-layer transformer adapter를 대체).
 
-**주요 특징**:
-1. **Flexible Resolution**: 고정 크기가 아닌 원본 aspect ratio 유지 가능
-2. **Flash Attention 2**: 메모리 효율적인 attention 구현 (필수)
-3. **BF16 정밀도**: 기본적으로 bfloat16으로 로드
-4. **Layer Selection**: 전체 LLM이 아닌 선택된 레이어까지만 사용 (`select_layer=16`)
+**Eagle VLM의 Modality Fusion (Vision + Language 융합):**
 
-**Forward Pass**:
+`modeling_eagle3_vl.py` (라인 175-250)에서 이미지와 텍스트가 융합되는 방식은 **Interleaved Token Replacement** 입니다:
+
+1. 텍스트 토큰을 LLM의 입력 임베딩으로 변환: `input_embeds = language_model.get_input_embeddings()(input_ids)`
+2. 이미지를 Vision Encoder로 처리 후 `mlp1` 프로젝터로 LLM 차원에 맞춤
+3. `input_ids`에서 `image_token_index`에 해당하는 위치를 찾아 해당 토큰을 Vision 임베딩으로 교체:
+   ```python
+   selected = (input_ids == self.image_token_index)
+   input_embeds[selected] = input_embeds[selected] * 0.0 + vit_embeds
+   ```
+4. 교체된 임베딩 시퀀스를 LLM에 통과시켜 hidden states 생성
+
+**결과:** Backbone은 `[B, seq_len, 2048]` 형태의 멀티모달 특징(backbone_features)과 `[B, seq_len]` 어텐션 마스크를 출력합니다.
+
+### 2.3 Component 2 — Action Head (`Gr00tN1d6ActionHead`)
+
+**파일:** `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` (라인 19-402)
+
+Action Head는 **Flow Matching** 기반 **Diffusion Policy**로, VLM의 출력을 조건(condition)으로 사용하여 연속적 로봇 액션 시퀀스를 생성합니다.
+
+#### 주요 서브 모듈:
+
+| 모듈 | 클래스 | 역할 |
+|------|--------|------|
+| `model` | `AlternateVLDiT` (기본) / `DiT` | 32-layer Diffusion Transformer |
+| `state_encoder` | `CategorySpecificMLP` | 로봇 상태 → 임베딩 변환 (embodiment별 가중치) |
+| `action_encoder` | `MultiEmbodimentActionEncoder` | 노이즈 액션 + 타임스텝 → 임베딩 (embodiment별 가중치) |
+| `action_decoder` | `CategorySpecificMLP` | DiT 출력 → 액션 velocity 예측 (embodiment별 가중치) |
+| `vlln` | `LayerNorm` | VLM 출력 정규화 |
+
+#### Diffusion Transformer (`AlternateVLDiT`)
+
+**파일:** `gr00t/model/modules/dit.py` (라인 289-364)
+
+N1.6의 핵심 혁신으로, 32-layer DiT가 **self-attention**과 **cross-attention** 블록을 교대로 배치합니다:
+
+- **홀수 블록 (idx % 2 == 1)**: Self-attention — state/action 토큰 간의 관계 학습
+- **짝수 블록 (idx % 2 == 0)**: Cross-attention — VLM 출력(image/text 토큰)을 조건으로 사용
+  - `idx % (2 * attend_text_every_n_blocks) == 0`이면 **텍스트 토큰**에 cross-attend
+  - 그 외에는 **이미지 토큰**에 cross-attend
+
+이 교대 패턴은 이미지와 텍스트 정보를 분리하여 처리함으로써 더 정교한 조건화를 가능하게 합니다.
+
+각 `BasicTransformerBlock`은:
+1. **AdaLayerNorm** (Adaptive Layer Norm): 타임스텝 임베딩으로 정규화 스케일/시프트 조정
+2. **Cross/Self-Attention**: diffusers 라이브러리의 `Attention` 모듈
+3. **Feed-Forward Network**: GEGLU 활성화 함수
+
+#### 멀티 에이전트 MLP 모듈 (`CategorySpecificMLP` / `MultiEmbodimentActionEncoder`)
+
+**파일:** `gr00t/model/modules/embodiment_conditioned_mlp.py`
+
+단일 모델로 다양한 로봇(embodiment)을 지원하기 위해, **카테고리별 독립 가중치**를 사용합니다:
+
 ```python
-def forward(self, vl_input):
-    outputs = self.model(
-        input_ids=vl_input["input_ids"],          # [B, seq_len]
-        attention_mask=vl_input["attention_mask"], # [B, seq_len]
-        pixel_values=vl_input["pixel_values"],     # [B, num_images, C, H, W]
-        output_hidden_states=True
-    )
-    hidden_states = outputs["hidden_states"][-1]   # [B, seq_len, 2048]
-    image_mask = input_ids == image_token_index    # 이미지 토큰 위치 마스크
-    
-    return {
-        "backbone_features": hidden_states,         # [B, seq_len, 2048]
-        "backbone_attention_mask": attention_mask,  # [B, seq_len]
-        "image_mask": image_mask                    # [B, seq_len]
-    }
-```
+class CategorySpecificLinear(nn.Module):
+    def __init__(self, num_categories, input_dim, hidden_dim):
+        self.W = nn.Parameter(0.02 * torch.randn(num_categories, input_dim, hidden_dim))
+        self.b = nn.Parameter(torch.zeros(num_categories, hidden_dim))
 
-**설정 가능 파라미터**:
-- `tune_llm`: LLM 레이어 학습 여부 (기본: False)
-- `tune_visual`: Vision encoder 학습 여부 (기본: False)
-- `tune_top_llm_layers`: 상위 N개 LLM 레이어만 학습 (기본: 4)
-- `select_layer`: 사용할 LLM 레이어 깊이 (기본: 16)
-
-#### 2.2.2 Action Head: `Gr00tN1d6ActionHead`
-
-**파일**: `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` (19-402 라인)
-
-**역할**: Vision-Language 특징과 로봇 상태를 받아 action trajectory를 생성
-
-**구조**:
-1. **State Encoder**: `CategorySpecificMLP` (embodiment별 별도 가중치)
-2. **Action Encoder**: `MultiEmbodimentActionEncoder` (noisy action + timestep encoding)
-3. **Diffusion Model**: `AlternateVLDiT` (32-layer Diffusion Transformer)
-4. **Action Decoder**: `CategorySpecificMLP` (velocity 예측)
-
-**핵심 하위 모듈**:
-
-##### A. State Encoder & Action Encoder/Decoder
-
-**파일**: `gr00t/model/modules/embodiment_conditioned_mlp.py`
-
-**Multi-Embodiment Support**: 각 로봇 플랫폼(embodiment)마다 별도의 가중치 세트를 유지
-
-```python
-class CategorySpecificMLP(nn.Module):
-    """각 embodiment마다 별도의 Linear 가중치를 가진 MLP"""
-    def __init__(self, num_categories, input_dim, hidden_dim, output_dim):
-        self.layer1 = CategorySpecificLinear(num_categories, input_dim, hidden_dim)
-        self.layer2 = CategorySpecificLinear(num_categories, hidden_dim, output_dim)
-    
     def forward(self, x, cat_ids):
-        # cat_ids: [B] - embodiment ID
-        # x: [B, T, input_dim]
-        # 각 배치별로 해당 embodiment의 가중치 선택
-        hidden = F.relu(self.layer1(x, cat_ids))
-        return self.layer2(hidden, cat_ids)  # [B, T, output_dim]
+        selected_W = self.W[cat_ids]  # [B, input_dim, hidden_dim]
+        selected_b = self.b[cat_ids]  # [B, hidden_dim]
+        return torch.bmm(x, selected_W) + selected_b.unsqueeze(1)
 ```
 
-**Action Encoder 상세**:
-```python
-class MultiEmbodimentActionEncoder(nn.Module):
-    def forward(self, actions, timesteps, cat_ids):
-        # actions: [B, T, action_dim] - noisy action trajectory
-        # timesteps: [B] - diffusion timestep (0~1000)
-        
-        # 1. Action embedding
-        a_emb = self.W1(actions, cat_ids)  # [B, T, hidden_size]
-        
-        # 2. Sinusoidal timestep encoding
-        tau_emb = self.pos_encoding(timesteps)  # [B, T, hidden_size]
-        
-        # 3. Concatenate and process
-        x = torch.cat([a_emb, tau_emb], dim=-1)  # [B, T, 2*hidden_size]
-        x = swish(self.W2(x, cat_ids))           # [B, T, hidden_size]
-        x = self.W3(x, cat_ids)                  # [B, T, hidden_size]
-        return x
+`max_num_embodiments = 32`개까지의 서로 다른 로봇 형태를 지원하며, 각 로봇마다 고유한 상태/액션 인코딩/디코딩 가중치를 갖습니다.
+
+### 2.4 아키텍처 구조도 요약
+
 ```
-
-##### B. Diffusion Transformer: `AlternateVLDiT`
-
-**파일**: `gr00t/model/modules/dit.py` (289-364 라인)
-
-**N1.6의 주요 변경점**: N1.5 대비 32개 레이어로 증가 (2배)
-
-**구조**:
-- **32 Transformer Layers** (N1.5는 16개)
-- **Interleaved Architecture**: Self-attention과 Cross-attention 교대 배치
-- **Alternate Vision-Language Attention**: 이미지 토큰과 텍스트 토큰을 번갈아 attend
-
-```python
-class AlternateVLDiT(DiT):
-    def forward(self, hidden_states, encoder_hidden_states, timestep, 
-                image_mask, backbone_attention_mask):
-        # hidden_states: [B, T, 1536] - (state + action) embeddings
-        # encoder_hidden_states: [B, S, 2048] - VL backbone features
-        # timestep: [B] - discrete timestep bucket (0~999)
-        
-        # Timestep encoding
-        temb = self.timestep_encoder(timestep)  # [B, 1536]
-        
-        # Separate image and text tokens
-        image_attention_mask = image_mask & backbone_attention_mask
-        non_image_attention_mask = (~image_mask) & backbone_attention_mask
-        
-        # Process through 32 layers
-        for idx, block in enumerate(self.transformer_blocks):
-            if idx % 2 == 1:
-                # Odd layers: Self-attention
-                hidden_states = block(
-                    hidden_states, 
-                    encoder_hidden_states=None,
-                    temb=temb
-                )
-            else:
-                # Even layers: Cross-attention
-                # 2개 블록마다 텍스트/이미지 교대
-                if idx % (2 * self.attend_text_every_n_blocks) == 0:
-                    curr_mask = non_image_attention_mask  # Attend to text
-                else:
-                    curr_mask = image_attention_mask      # Attend to images
-                
-                hidden_states = block(
-                    hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=curr_mask,
-                    temb=temb
-                )
-        
-        # Output projection with adaptive layer norm
-        shift, scale = self.proj_out_1(F.silu(temb)).chunk(2, dim=1)
-        hidden_states = self.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
-        return self.proj_out_2(hidden_states)  # [B, T, 1024]
+입력: [이미지들, 텍스트 명령, 로봇 상태]
+          │
+          ▼
+┌─────────────────────────────┐
+│   Eagle VLM (Backbone)       │
+│  ┌──────────┐  ┌──────────┐ │
+│  │ SigLIP-2 │→│  mlp1    │ │  Vision Encoder → Projector
+│  │ Vision   │  │Projector │ │
+│  └──────────┘  └────┬─────┘ │
+│                     │        │
+│  ┌──────────────────▼──────┐│
+│  │ Qwen2 LLM (16 layers)  ││  텍스트+이미지 토큰 인터리빙
+│  │  (상위 4 레이어 학습)     ││
+│  └──────────┬──────────────┘│
+└─────────────┼───────────────┘
+              │ backbone_features [B, S, 2048]
+              ▼
+┌─────────────────────────────┐
+│   Action Head                │
+│  ┌──────────┐               │
+│  │State Enc.│→ state_feat   │  CategorySpecificMLP
+│  └──────────┘   [B,1,1536]  │
+│  ┌──────────┐               │
+│  │Action Enc│→ action_feat  │  MultiEmbodimentActionEncoder
+│  └──────────┘ [B,16,1536]   │
+│       │                      │
+│  cat([state, action]) = sa  │  [B, 17, 1536]
+│       │                      │
+│  ┌──────────────────────┐   │
+│  │ AlternateVLDiT       │   │  32-layer DiT
+│  │ (Cross-attn to VLM   │   │  교대 self/cross attention
+│  │  + Self-attn)         │   │
+│  └───────────┬──────────┘   │
+│              │               │
+│  ┌──────────▼──────────┐    │
+│  │  Action Decoder     │    │  CategorySpecificMLP
+│  └──────────┬──────────┘    │
+└─────────────┼───────────────┘
+              │
+              ▼
+   예측 velocity → Euler 적분 → 최종 Action [B, 16, 29]
 ```
-
-**Attention 패턴** (`attend_text_every_n_blocks=2`):
-```
-Layer 0:  Cross-attention to TEXT tokens
-Layer 1:  Self-attention
-Layer 2:  Cross-attention to IMAGE tokens
-Layer 3:  Self-attention
-Layer 4:  Cross-attention to TEXT tokens
-...
-```
-
-이 구조는 텍스트와 이미지 정보를 균형있게 활용하도록 설계되었습니다.
-
-### 2.3 Modality Fusion: Vision-Language-Action 융합 방식
-
-**융합 방식**: **Cross-Attention 기반 조건부 생성 (Conditional Generation)**
-
-#### 융합 단계별 흐름:
-
-**Stage 1: Vision + Language 융합 (Backbone 내부)**
-```
-Images → Vision Encoder → Visual tokens
-Text   → Tokenizer      → Text tokens
-                         ↓
-              Language Model (with visual tokens interleaved)
-                         ↓
-              Unified VL embeddings [B, seq_len, 2048]
-```
-
-**Stage 2: VL embeddings + State + Action 융합 (Action Head)**
-
-```python
-# Action Head forward() 구조:
-
-# 1. State encoding (embodiment-specific)
-state_features = self.state_encoder(state, embodiment_id)  
-# [B, state_dim] → [B, 1, 1536]
-
-# 2. Noisy action encoding
-noisy_action = (1-t) * noise + t * action_gt  # Flow matching interpolation
-action_features = self.action_encoder(noisy_action, timestep, embodiment_id)
-# [B, action_horizon, action_dim] → [B, action_horizon, 1536]
-
-# 3. Concatenate state and action
-sa_embeds = torch.cat([state_features, action_features], dim=1)
-# [B, 1 + action_horizon, 1536]
-
-# 4. Cross-attention to VL features
-for layer in diffusion_transformer:
-    if cross_attention_layer:
-        # Query: state-action embeddings
-        # Key, Value: VL backbone features
-        sa_embeds = cross_attention(
-            query=sa_embeds,                    # [B, T_sa, 1536]
-            key_value=vl_embeds,                # [B, T_vl, 2048]
-            attention_mask=image_or_text_mask   # 선택적으로 image/text attend
-        )
-    elif self_attention_layer:
-        sa_embeds = self_attention(sa_embeds)
-
-# 5. Decode velocity
-velocity_pred = self.action_decoder(sa_embeds, embodiment_id)
-# [B, action_horizon, action_dim]
-```
-
-**핵심 메커니즘**:
-1. **Separate Encoding**: State, Action, VL을 각각 인코딩 후 통합
-2. **Cross-Attention Conditioning**: VL 정보를 key-value로 사용하여 action 생성 조건화
-3. **Embodiment-Specific Projectors**: 각 로봇별 별도 encoder/decoder로 domain gap 해결
-4. **Alternate Attention**: 이미지와 텍스트 정보를 분리하여 선택적 참조
 
 ---
 
 ## 3. 데이터 흐름 및 텐서 쉐이프
 
-### 3.1 Training Forward Pass
+### 3.1 학습 시 Forward Pass 단계별 추적
 
-전체 데이터 흐름을 단계별로 추적합니다.
+`Gr00tN1d6.forward()` (라인 496-513)을 기준으로 설명합니다. 배치 크기 `B`, 시퀀스 길이 `S`, 액션 호라이즌 `T=16`, 최대 액션 차원 `D=29`, hidden `H=1024`, 입력 임베딩 `E=1536`, backbone 임베딩 `C=2048`으로 가정합니다.
 
-#### 입력 데이터 구조 (from Dataset)
+---
 
-```python
-batch = {
-    # Vision-Language inputs
-    "input_ids": [B, seq_len],           # Tokenized text with image placeholders
-    "attention_mask": [B, seq_len],      # Attention mask
-    "pixel_values": [B, num_imgs, 3, H, W],  # Images (가변 해상도)
-    
-    # Robot state & action
-    "state": [B, max_state_dim],         # Padded state (실제 dim은 작을 수 있음)
-    "action": [B, max_action_horizon, max_action_dim],  # Padded action
-    "action_mask": [B, max_action_horizon, max_action_dim],  # Valid action 마스크
-    "embodiment_id": [B],                # Embodiment index (0~31)
-}
+#### 단계 1: 입력 준비 (`prepare_input`)
+
+```
+입력 딕셔너리:
+  - input_ids:    [B, S]          (토큰화된 텍스트 + 이미지 플레이스홀더)
+  - attention_mask: [B, S]        (패딩 마스크)
+  - pixel_values: [B*N_img, C_img, H_img, W_img]  (전처리된 이미지)
+  - state:        [B, 1, 29]      (정규화된 로봇 상태, 패딩됨)
+  - action:       [B, 16, 29]     (정규화된 액션 청크, 패딩됨)
+  - action_mask:  [B, 16, 29]     (유효 액션 차원 마스크)
+  - embodiment_id: [B]            (로봇 종류 ID, 정수)
 ```
 
-**Dimension 예시**:
-- `seq_len`: ~100-500 (이미지 개수와 텍스트 길이에 따라 가변)
-- `num_imgs`: 예: 4 (4개 카메라 뷰 × 1 timestep, 또는 1개 뷰 × 4 timesteps)
-- `H, W`: 가변 (Eagle은 any-resolution 지원)
-- `max_state_dim`: 29 (기본값, 실제 사용은 embodiment마다 다름)
-- `max_action_dim`: 29 (기본값)
-- `max_action_horizon`: 40 (기본값, 실제 사용은 16 등 더 작을 수 있음)
+#### 단계 2: Backbone Forward (`EagleBackbone.forward`)
 
-#### Step-by-Step Tensor Transformations
+**파일:** `eagle_backbone.py` 라인 105-120
 
 ```python
-# ============ BACKBONE (EagleBackbone) ============
-inputs:
-    input_ids:      [B, seq_len=300]
-    pixel_values:   [B, 4, 3, 384, 384]  # 예시: 4개 이미지, 384x384
-    attention_mask: [B, seq_len=300]
+outputs = self.model(**vl_input, output_hidden_states=True)
+outputs = outputs["hidden_states"][-1]  # 마지막 hidden state 추출
+```
 
-# Vision Encoder (SigLIP)
-visual_features = vision_model(pixel_values)
-# → [B, 4, num_patches, vision_dim]
-# → [B, 4, 256, 1152]  (예: 24x24 patches=576, 하지만 variable)
+내부 흐름:
+1. `input_ids` → LLM 임베딩 테이블 → `input_embeds: [B, S, 2048]`
+2. `pixel_values` → SigLIP-2 Vision Encoder → `vit_embeds: [N_patches, vit_hidden]`
+3. Pixel Unshuffle + `mlp1` 프로젝터 → `vit_embeds: [N_patches_down, 2048]`
+4. `input_embeds`에서 이미지 토큰 위치를 찾아 `vit_embeds`로 교체
+5. 교체된 임베딩을 Qwen2 LLM 16 레이어에 통과
 
-# MLP Projection
-visual_features = mlp1(visual_features)
-# → [B, 4, num_patches, 2048]
+```
+출력:
+  backbone_features:      [B, S, 2048]   (VL 멀티모달 특징)
+  backbone_attention_mask: [B, S]         (유효 토큰 마스크)
+  image_mask:             [B, S]          (이미지 토큰 위치)
+```
 
-# Language Model (with visual tokens merged)
-# input_ids에서 image_token_index 위치에 visual_features 삽입
-hidden_states = language_model(input_ids, visual_embeds)
-# → [B, seq_len + 4*num_patches, 2048]
-# → [B, ~1300, 2048]  (텍스트 토큰 + 이미지 토큰 통합)
+#### 단계 3: VLM 출력 후처리 (`process_backbone_output`)
 
-backbone_output:
-    backbone_features:      [B, 1300, 2048]
-    backbone_attention_mask: [B, 1300]
-    image_mask:             [B, 1300]  # True for image tokens
+```python
+backbone_features = self.vlln(backbone_features)  # LayerNorm
+```
 
+```
+backbone_features: [B, S, 2048] → [B, S, 2048]  (정규화됨)
+```
 
-# ============ ACTION HEAD (Gr00tN1d6ActionHead) ============
+#### 단계 4: State 인코딩
 
-# --- State Encoding ---
-state_input: [B, 29]  # max_state_dim
-state_features = state_encoder(state_input, embodiment_id)
-# → [B, 1, 1536]  (unsqueeze를 통해 sequence dim 추가)
+```python
+state_features = self.state_encoder(action_input.state, embodiment_id)
+# CategorySpecificMLP: [B, 1, 29] → [B, 1, 1536]
+```
 
-# State dropout (training only)
-if training and state_dropout_prob > 0:
-    # Randomly mask some state features
-    state_features = state_features * (1 - dropout_mask) + mask_token * dropout_mask
+- `state: [B, 1, 29]` → `CategorySpecificLinear(29→1024)` → ReLU → `CategorySpecificLinear(1024→1536)`
+- 선택적 State Dropout (학습 시): 확률적으로 mask_token으로 교체
+- 선택적 Gaussian Noise 추가
 
-# --- Action Encoding ---
-actions: [B, 16, 29]  # [action_horizon, max_action_dim]
+```
+state_features: [B, 1, 1536]
+```
 
-# Flow matching: noisy trajectory 생성
-t = sample_time()  # [B, 1, 1] ~ Beta(1.5, 1.0) distribution
-noise = torch.randn_like(actions)  # [B, 16, 29]
-noisy_trajectory = (1 - t) * noise + t * actions
-velocity_gt = actions - noise  # Ground truth velocity
+#### 단계 5: Flow Matching 노이즈 생성 및 Action 인코딩
 
-# Discretize timestep for embedding
-t_discretized = (t * 1000).long()  # [B] in [0, 999]
+```python
+# 노이즈 샘플링 및 보간
+noise = torch.randn(actions.shape)           # [B, 16, 29]
+t = Beta(1.5, 1.0).sample([B]) * 0.999      # [B] ∈ (0, 0.999)
+noisy_trajectory = (1 - t) * noise + t * actions  # [B, 16, 29]
+velocity = actions - noise                    # [B, 16, 29] (학습 목표)
 
-# Encode noisy action + timestep
-action_features = action_encoder(noisy_trajectory, t_discretized, embodiment_id)
-# → [B, 16, 1536]
+# 타임스텝 이산화
+t_discretized = (t * 1000).long()            # [B] ∈ {0, ..., 999}
 
-# Position embedding (optional)
-if add_pos_embed:
-    pos_embs = position_embedding(torch.arange(16))  # [16, 1536]
-    action_features = action_features + pos_embs
+# 액션 인코딩
+action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+```
 
-# --- Concatenate State + Action ---
-sa_embeds = torch.cat([state_features, action_features], dim=1)
-# → [B, 17, 1536]  (1 state + 16 action steps)
+`MultiEmbodimentActionEncoder` 내부:
+1. `W1`: `[B, 16, 29] → [B, 16, 1536]` (CategorySpecificLinear)
+2. Sinusoidal Positional Encoding: `t_discretized: [B, 16] → tau_emb: [B, 16, 1536]`
+3. Concat + `W2`: `[B, 16, 3072] → [B, 16, 1536]` (Swish 활성화)
+4. `W3`: `[B, 16, 1536] → [B, 16, 1536]`
 
-# --- Diffusion Transformer (AlternateVLDiT) ---
-# 32 layers of alternating self/cross attention
-hidden_states = sa_embeds  # [B, 17, 1536]
-encoder_hidden_states = backbone_features  # [B, 1300, 2048]
+```
+action_features: [B, 16, 1536]
+```
 
-temb = timestep_encoder(t_discretized)  # [B, 1536]
+#### 단계 6: 위치 임베딩 추가 (선택적)
 
-for idx in range(32):
-    if idx % 2 == 1:
-        # Self-attention layer
-        hidden_states = transformer_block(
-            hidden_states,  # Q, K, V from hidden_states
-            temb=temb
-        )
-        # → [B, 17, 1536]
-    else:
-        # Cross-attention layer
-        # Select image or text mask based on layer index
-        if idx % 4 == 0:
-            mask = non_image_mask  # Attend to text
-        else:
-            mask = image_mask      # Attend to images
-        
-        hidden_states = transformer_block(
-            hidden_states,                 # Q from hidden_states
-            encoder_hidden_states,         # K, V from VL features
-            encoder_attention_mask=mask,
-            temb=temb
-        )
-        # → [B, 17, 1536]
+```python
+pos_ids = torch.arange(16)
+pos_embs = self.position_embedding(pos_ids)  # [1, 16, 1536]
+action_features = action_features + pos_embs
+```
 
-# --- Output Projection ---
-# Adaptive layer norm with timestep conditioning
-shift, scale = proj_out_1(silu(temb)).chunk(2)  # [B, 1536] → 2x [B, 1536]
-hidden_states = norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
-# → [B, 17, 1536]
+#### 단계 7: State + Action 결합 및 DiT Forward
 
-model_output = proj_out_2(hidden_states)  # [B, 17, 1024]
+```python
+sa_embs = torch.cat((state_features, action_features), dim=1)
+# [B, 1, 1536] + [B, 16, 1536] = [B, 17, 1536]
+```
 
-# --- Action Decoding ---
-pred_output = action_decoder(model_output, embodiment_id)
-# → [B, 17, 29]  (max_action_dim)
+`AlternateVLDiT.forward()` (라인 299-364):
+- `hidden_states = sa_embs: [B, 17, 1536]`
+- `encoder_hidden_states = vl_embeds: [B, S, 2048]`
+- 타임스텝 인코딩: `t_discretized → temb: [B, 1536]`
+- 32개 Transformer 블록 순차 처리:
+  - **짝수 블록**: Cross-attention (sa_embs가 query, vl_embeds가 key/value)
+    - 이미지 토큰 또는 텍스트 토큰에 교대 attend
+  - **홀수 블록**: Self-attention (sa_embs 내부)
+  - 모든 블록: AdaLayerNorm(temb로 조건화) + FFN
 
-pred_velocity = pred_output[:, -16:, :]  # Slice action part
-# → [B, 16, 29]
+```
+DiT 출력 (proj_out_2 후): [B, 17, 1024]
+```
 
-# --- Loss Calculation ---
-action_loss = F.mse_loss(pred_velocity, velocity_gt, reduction='none') * action_mask
+#### 단계 8: Action 디코딩 및 Loss 계산
+
+```python
+pred = self.action_decoder(model_output, embodiment_id)
+# CategorySpecificMLP: [B, 17, 1024] → [B, 17, 29]
+
+pred_actions = pred[:, -16:]  # 마지막 16 스텝 (action 부분만)
+# [B, 16, 29]
+
+# MSE Loss (Flow Matching velocity 예측)
+action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
 loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 ```
 
-### 3.2 Inference Forward Pass (Action Generation)
+### 3.2 추론 시 Denoising Process
 
-추론 시에는 **Denoising 과정**을 반복합니다.
+`get_action_with_features()` (라인 288-364):
 
 ```python
-# Initial setup
-actions = torch.randn([B, 16, 29])  # Random noise
-dt = 1.0 / num_inference_timesteps  # 예: 1/4 = 0.25
+# 초기: 순수 노이즈에서 시작
+actions = torch.randn([B, 16, 29])
+dt = 1.0 / 4  # num_inference_timesteps = 4
 
-# Iterative denoising (예: 4 steps)
-for t in range(4):  # num_inference_timesteps = 4
+for t in range(4):
     t_cont = t / 4.0  # 0, 0.25, 0.5, 0.75
-    t_discretized = int(t_cont * 1000)  # 0, 250, 500, 750
-    
-    # Encode current (noisy) actions
-    action_features = action_encoder(actions, t_discretized, embodiment_id)
-    # [B, 16, 1536]
-    
-    sa_embeds = torch.cat([state_features, action_features], dim=1)
-    # [B, 17, 1536]
-    
-    # Run through DiT
-    model_output = diffusion_model(
-        sa_embeds, 
-        encoder_hidden_states=vl_embeds,
-        timestep=t_discretized
-    )
-    # [B, 17, 1024]
-    
-    pred_velocity = action_decoder(model_output, embodiment_id)[:, -16:, :]
-    # [B, 16, 29]
-    
-    # Euler integration step (Flow Matching ODE)
-    actions = actions + dt * pred_velocity
-    # [B, 16, 29]
-
-# Final output
-final_actions = actions  # [B, 16, 29]
+    # ... DiT forward로 velocity 예측 ...
+    actions = actions + dt * pred_velocity  # Euler 적분
 ```
 
-**ODE 수식**:
-```
-dz/dt = v_θ(z_t, c)
-```
-여기서:
-- `z_t`: 시간 t에서의 noisy action
-- `v_θ`: 모델이 예측하는 velocity field
-- `c`: conditioning (VL features, state)
+4번의 디노이징 스텝만으로 순수 노이즈 → 최종 액션으로 변환합니다 (매우 효율적).
 
-**Euler method**로 이산화:
-```
-z_{t+dt} = z_t + dt * v_θ(z_t, c)
-```
+### 3.3 텐서 쉐이프 요약 테이블
+
+| 단계 | 텐서 | 쉐이프 | 설명 |
+|------|-------|--------|------|
+| 입력 | `pixel_values` | `[B*N, C, H, W]` | 전처리된 이미지 |
+| 입력 | `input_ids` | `[B, S]` | 토큰화된 텍스트+이미지 |
+| 입력 | `state` | `[B, 1, 29]` | 패딩된 정규화 상태 |
+| 입력 | `action` | `[B, 16, 29]` | 패딩된 정규화 액션 |
+| Backbone | `backbone_features` | `[B, S, 2048]` | VLM 멀티모달 특징 |
+| State Enc. | `state_features` | `[B, 1, 1536]` | 인코딩된 상태 |
+| Action Enc. | `action_features` | `[B, 16, 1536]` | 인코딩된 노이즈 액션 |
+| DiT 입력 | `sa_embs` | `[B, 17, 1536]` | state + action concat |
+| DiT 출력 | `model_output` | `[B, 17, 1024]` | 변환된 특징 |
+| Decoder | `pred_actions` | `[B, 16, 29]` | 예측 velocity |
+| Loss | `loss` | 스칼라 | 마스킹된 MSE |
 
 ---
 
 ## 4. 학습 로직
 
-### 4.1 Loss Function: Flow Matching
+### 4.1 Loss Function: Flow Matching MSE
 
-**파일**: `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` (148-256 라인)
+**파일:** `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` 라인 198-248
 
-**Loss Type**: **Velocity Prediction Loss (MSE)**
+GR00T N1.6는 **Flow Matching** (Conditional Flow Matching) 프레임워크를 사용합니다. 이는 Diffusion Policy의 변형으로, 노이즈에서 데이터로의 **확률적 흐름(probability flow)**의 속도장(velocity field)을 학습합니다.
 
-#### Flow Matching 원리
+#### 핵심 수식:
 
-일반적인 diffusion과 달리, **Flow Matching**은 noise → data로의 연속적인 flow를 학습합니다.
+1. **노이즈 보간 (Forward Process)**:
 
-**Training Objective**:
-```
-L = E_{t~Beta, ε~N(0,I)} [ ||v_θ(z_t, t, c) - v_gt||^2 ]
-```
+   \[
+   x_t = (1 - t) \cdot \epsilon + t \cdot x_1
+   \]
 
-여기서:
-- `t ~ Beta(α=1.5, β=1.0)`: 시간 샘플링 (0에 가까운 값 선호)
-- `z_t = (1-t)·ε + t·x`: Interpolated trajectory
-- `v_gt = x - ε`: Ground truth velocity (data에서 noise 방향)
-- `v_θ`: 모델이 예측하는 velocity
+   여기서 \(\epsilon \sim \mathcal{N}(0, I)\)는 노이즈, \(x_1\)은 실제 액션, \(t \in [0, 1)\)는 시간.
 
-#### 구현 코드
+2. **목표 Velocity**:
 
+   \[
+   v^* = x_1 - \epsilon
+   \]
+
+3. **Loss**:
+
+   \[
+   \mathcal{L} = \frac{\sum_{b,t,d} \| \hat{v}_{b,t,d} - v^*_{b,t,d} \|^2 \cdot m_{b,t,d}}{\sum_{b,t,d} m_{b,t,d}}
+   \]
+
+   여기서 \(m\)은 action_mask (유효 차원만 학습).
+
+**코드:**
 ```python
-def forward(self, backbone_output, action_input):
-    # Get ground truth actions
-    actions = action_input.action  # [B, action_horizon, action_dim]
-    
-    # Sample time from Beta distribution
-    # Beta(1.5, 1.0)은 0에 가까운 값을 더 많이 샘플링
-    # → 초기 노이즈 제거에 집중
-    t = self.sample_time(actions.shape[0])  # [B]
-    t = t[:, None, None]  # [B, 1, 1] for broadcasting
-    
-    # Sample Gaussian noise
-    noise = torch.randn_like(actions)  # [B, T, D]
-    
-    # Flow matching interpolation
-    noisy_trajectory = (1 - t) * noise + t * actions
-    # t=0: pure noise
-    # t=1: pure data
-    # t=0.5: 50-50 mixture
-    
-    # Ground truth velocity
-    velocity = actions - noise
-    
-    # ... (encode and process through DiT) ...
-    
-    # Predict velocity
-    pred_velocity = self.action_decoder(model_output, embodiment_id)
-    pred_actions = pred_velocity[:, -actions.shape[1]:]  # [B, T, D]
-    
-    # Compute loss with masking
-    action_mask = action_input.action_mask  # [B, T, D]
-    action_loss = F.mse_loss(pred_actions, velocity, reduction='none') * action_mask
-    loss = action_loss.sum() / (action_mask.sum() + 1e-6)
-    
-    return {"loss": loss}
+noise = torch.randn(actions.shape)
+t = self.sample_time(B, device, dtype)  # Beta(1.5, 1.0) 분포에서 샘플링
+noisy_trajectory = (1 - t) * noise + t * actions
+velocity = actions - noise  # 목표 velocity
+
+# ... DiT forward ...
+
+action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
+loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 ```
 
-**Loss 특징**:
-1. **Masked MSE**: `action_mask`를 통해 유효한 action dimension과 horizon만 학습
-2. **Velocity Space**: Action을 직접 예측하지 않고 velocity를 예측
-3. **Time Weighting**: Beta distribution으로 초기 denoising에 더 집중
+#### 시간 샘플링 전략:
 
-#### Action Mask의 역할
+시간 `t`는 **Beta(1.5, 1.0)** 분포에서 샘플링된 후 `(1-t) * 0.999`로 변환됩니다. Beta(1.5, 1.0) 분포는 작은 값(노이즈에 가까운 상태) 쪽으로 약간 편향되어, 디노이징 초기 단계에서의 학습을 강화합니다.
 
+### 4.2 Optimizer & Scheduler
+
+**파일:** `gr00t/configs/training/training_config.py` + `gr00t/experiment/experiment.py`
+
+| 설정 | 기본값 | 설명 |
+|------|--------|------|
+| Optimizer | `adamw_torch_fused` (사전학습) / `adamw_torch` (파인튜닝) | Fused AdamW가 기본 |
+| Learning Rate | `1e-4` | |
+| LR Scheduler | `cosine` | Cosine Annealing |
+| Weight Decay | `1e-5` | |
+| Warmup Ratio | `0.05` (전체 스텝의 5%) | Linear warmup |
+| Max Grad Norm | `1.0` | Gradient clipping |
+| Max Steps | `30,000` | |
+| Mixed Precision | `bf16 = True` | BFloat16 학습 |
+
+**코드 (experiment.py 라인 191-221):**
 ```python
-# Example: libero_panda embodiment
-# Actual action dim: 7 (joint positions)
-# max_action_dim: 29 (padding)
-# Actual horizon: 16
-# max_action_horizon: 40 (padding)
-
-action_mask = torch.ones([B, 40, 29])
-action_mask[:, 16:, :] = 0   # Mask out unused horizon
-action_mask[:, :, 7:] = 0    # Mask out padded dimensions
-# → Only [B, 16, 7] region contributes to loss
+training_args = TrainingArguments(
+    learning_rate=config.training.learning_rate,         # 1e-4
+    lr_scheduler_type=config.training.lr_scheduler_type, # "cosine"
+    weight_decay=config.training.weight_decay,           # 1e-5
+    warmup_ratio=config.training.warmup_ratio,           # 0.05
+    max_grad_norm=config.training.max_grad_norm,         # 1.0
+    bf16=config.training.bf16,                           # True
+    optim=config.training.optim,                         # "adamw_torch_fused"
+    gradient_checkpointing=config.training.gradient_checkpointing,
+    deepspeed=deepspeed_config,                          # ZeRO Stage 2
+    ...
+)
 ```
 
-### 4.2 Optimization
+### 4.3 학습 전략 (Freeze / Unfreeze)
 
-**파일**: `gr00t/experiment/trainer.py`, `gr00t/configs/training/training_config.py`
+GR00T N1.6은 **선택적 파라미터 동결(Selective Freezing)** 전략을 사용합니다:
 
-#### Optimizer 설정
+| 모듈 | 기본 동결 상태 | 설정 파라미터 |
+|------|---------------|---------------|
+| Vision Encoder (SigLIP-2) | **동결** | `tune_visual=False` |
+| Vision Projector (mlp1) | **동결** | (tune_visual과 연동) |
+| LLM (Qwen2) 하위 레이어 | **동결** | `tune_llm=False` |
+| LLM 상위 4 레이어 | **학습** | `tune_top_llm_layers=4` |
+| VL LayerNorm (vlln) | **학습** | `tune_vlln=True` |
+| Action Head Projectors | **학습** | `tune_projector=True` |
+| DiT (32 layers) | **학습** | `tune_diffusion_model=True` |
 
-```python
-# Default configuration (from launch_finetune.py)
-optimizer: "adamw_torch"
-learning_rate: 1e-4
-weight_decay: 0.01
-warmup_ratio: 0.03
-max_steps: 2000
-gradient_accumulation_steps: 자동 계산 (global_batch_size 기반)
-```
+**핵심 포인트:**
+- N1.5에서 사용하던 VLM 이후의 4-layer Transformer Adapter를 제거하고, 대신 **VLM 상위 4개 LLM 레이어를 직접 학습**합니다.
+- 학습 가능한 backbone 파라미터는 **FP32로 유지**합니다 (`backbone_trainable_params_fp32=True`).
+- 동결된 모듈은 학습 중 자동으로 `eval()` 모드로 전환되어 Dropout/BatchNorm이 올바르게 동작합니다.
 
-#### Learning Rate Schedule
+### 4.4 분산 학습 (DeepSpeed)
 
-**Scheduler**: `linear` (HuggingFace default with warmup)
+- **기본 설정**: DeepSpeed ZeRO Stage 2 (optimizer states + gradients 분산)
+- **설정 파일**: `gr00t/configs/deepspeed/zero2_config.json`
+- Multi-GPU에서는 `ddp_find_unused_parameters=False`
 
-```
-LR
- ^
- |     /----------------\
- |    /                  \
- |   /                    \
- |  /                      \___
- | /                            \___
- |/________________________________\___> Steps
- 0   warmup               max_steps
-     (3% of max)
-```
+### 4.5 State Augmentation
 
-**Warmup 설정**:
-```python
-warmup_steps = max_steps * warmup_ratio  # 2000 * 0.03 = 60 steps
-```
+학습 시 로봇 상태에 대한 2가지 증강 기법이 적용됩니다:
 
-#### 학습 전략: Selective Fine-tuning
-
-**설정 파라미터** (from `Gr00tN1d6Config`):
-
-```python
-# Backbone (Eagle VLM)
-tune_llm: False              # LLM 전체 freeze
-tune_visual: False           # Vision encoder freeze
-tune_top_llm_layers: 4       # 상위 4개 LLM layer만 학습
-reproject_vision: False      # Vision projection layer freeze
-
-# Action Head
-tune_projector: True         # State/Action encoder-decoder 학습
-tune_diffusion_model: True   # DiT 전체 학습
-tune_vlln: True              # Vision-language layer norm 학습
-
-# Precision
-load_bf16: True              # Backbone을 BF16으로 로드
-backbone_trainable_params_fp32: True  # 학습 가능 파라미터는 FP32로 변환
-```
-
-**실제 학습 파라미터 수** (3B 모델 기준):
-```
-Total parameters: ~3B
-Trainable parameters: ~700M (23%)
-  - Top 4 LLM layers: ~200M
-  - DiT (32 layers): ~400M
-  - Projectors (state/action encoder-decoder): ~50M
-  - VLLN: ~5M
-```
-
-#### Gradient Checkpointing
-
-**설정**: 기본적으로 활성화되지 않음 (메모리 충분할 경우)
-
-```python
-# 활성화 방법 (메모리 부족 시)
-model.gradient_checkpointing_enable()
-```
-
-#### Batch Size 계산
-
-```python
-# launch_finetune.py example
-global_batch_size = 32
-num_gpus = 1
-per_device_batch_size = 8  # GPU memory에 따라 조정
-
-gradient_accumulation_steps = global_batch_size // (per_device_batch_size * num_gpus)
-# = 32 // 8 = 4 steps
-```
-
-#### Mixed Precision Training
-
-**설정**: `bf16=True` (config에서 자동 적용)
-
-```python
-# DeepSpeed ZeRO-2 config (multi-GPU의 경우)
-{
-    "bf16": {"enabled": true},
-    "zero_optimization": {
-        "stage": 2,
-        "offload_optimizer": {"device": "cpu"}
-    }
-}
-```
-
-### 4.3 Data Augmentation
-
-**파일**: `gr00t/model/gr00t_n1d6/processing_gr00t_n1d6.py`, `image_augmentations.py`
-
-#### Image Augmentation (Training only)
-
-```python
-# Default augmentation pipeline
-train_image_transform = A.Compose([
-    A.RandomResizedCrop(
-        height=shortest_edge,  # 256
-        width=shortest_edge,
-        scale=(crop_fraction, 1.0),  # 0.95~1.0
-        ratio=(0.9, 1.1)
-    ),
-    A.ColorJitter(
-        brightness=0.3,
-        contrast=0.4,
-        saturation=0.5,
-        hue=0.08
-    ),
-    A.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-    ToTensorV2()
-])
-```
-
-**Consistency across views**: 동일한 augmentation을 모든 카메라 뷰에 적용 (replay 메커니즘)
-
-#### State Augmentation (Training only)
-
-```python
-# State dropout (default: 0.0)
-state_dropout_prob = 0.0  # 0으로 설정 시 사용하지 않음
-
-if training and state_dropout_prob > 0:
-    do_dropout = torch.rand(B) < state_dropout_prob
-    state_features = state_features * (1 - do_dropout) + mask_token * do_dropout
-
-# State additive noise (default: 0.0)
-state_additive_noise_scale = 0.0  # 0으로 설정 시 사용하지 않음
-
-if training and state_additive_noise_scale > 0:
-    noise = torch.randn_like(state_features) * state_additive_noise_scale
-    state_features = state_features + noise
-```
-
-### 4.4 Normalization
-
-**파일**: `gr00t/data/state_action/state_action_processor.py`
-
-#### State Normalization
-
-**방식**: Min-Max 또는 Percentile 기반
-
-```python
-# Compute statistics from dataset
-stats = {
-    "embodiment_tag": {
-        "state": {
-            "joint_positions": {
-                "min": [0.1, 0.2, ...],  # Per-dimension min
-                "max": [1.5, 1.8, ...],  # Per-dimension max
-                "mean": [...],
-                "std": [...]
-            }
-        },
-        "action": {...}
-    }
-}
-
-# Normalization formula
-def normalize_state(state, stats):
-    min_val = stats["min"]
-    max_val = stats["max"]
-    # Min-max normalization to [-1, 1]
-    normalized = 2 * (state - min_val) / (max_val - min_val) - 1
-    
-    # Clip outliers (optional)
-    if clip_outliers:
-        normalized = torch.clamp(normalized, -1, 1)
-    
-    return normalized
-```
-
-#### Action Normalization & Relative Actions
-
-**N1.6의 중요 변경**: **State-Relative Actions**
-
-```python
-# use_relative_action = True (N1.6 default)
-
-# Training: Convert absolute action to relative
-def compute_relative_action(action, state):
-    # action: [T, D] absolute joint positions
-    # state: [D] current state
-    relative_action = action - state[None, :]  # Broadcast
-    return relative_action
-
-# Inference: Convert relative back to absolute
-def compute_absolute_action(relative_action, state):
-    absolute_action = relative_action + state[None, :]
-    return absolute_action
-```
-
-**이유**: 상대 action은 일반화 성능을 향상시킴 (starting pose에 덜 민감)
+1. **State Dropout** (`state_dropout_prob`): 학습 시 확률적으로 상태 특징을 학습 가능한 mask_token으로 교체하여, 모델이 상태 없이도 동작하도록 학습
+2. **Additive Gaussian Noise** (`state_additive_noise_scale`): 상태 특징에 가우시안 노이즈를 추가하여 로버스트성 향상
 
 ---
 
 ## 5. 핵심 코드 스니펫 요약
 
-### 5.1 모델 초기화 및 로딩
+### 5.1 전체 모델 Forward Pass
 
-**파일**: `gr00t/model/gr00t_n1d6/gr00t_n1d6.py`
-
-```python
-from transformers import AutoModel, AutoProcessor
-from gr00t.configs.model.gr00t_n1d6 import Gr00tN1d6Config
-
-# Load pretrained model
-config = Gr00tN1d6Config.from_pretrained("nvidia/GR00T-N1.6-3B")
-model = AutoModel.from_pretrained(
-    "nvidia/GR00T-N1.6-3B",
-    config=config,
-    trust_remote_code=True,
-    torch_dtype=torch.bfloat16
-)
-
-# Load processor (for data preprocessing)
-processor = AutoProcessor.from_pretrained(
-    "nvidia/GR00T-N1.6-3B",
-    trust_remote_code=True
-)
-```
-
-**주요 설정 파라미터**:
+**파일:** `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` 라인 496-513
 
 ```python
-class Gr00tN1d6Config:
-    # Backbone
-    model_name = "nvidia/Eagle-Block2A-2B-v2"
-    backbone_embedding_dim = 2048
-    tune_top_llm_layers = 4
-    
-    # Action head
-    hidden_size = 1024
-    input_embedding_dim = 1536
-    action_horizon = 16
-    max_state_dim = 29
-    max_action_dim = 29
-    
-    # Diffusion
-    num_layers = 32  # DiT depth
-    num_attention_heads = 32
-    attention_head_dim = 48
-    num_inference_timesteps = 4
-    
-    # Training
-    tune_projector = True
-    tune_diffusion_model = True
-    tune_llm = False
-    tune_visual = False
+class Gr00tN1d6(PreTrainedModel):
+    def forward(self, inputs: dict) -> BatchFeature:
+        # 1. 입력 준비: backbone(VLM)용과 action_head용으로 분리
+        backbone_inputs, action_inputs = self.prepare_input(inputs)
+
+        # 2. VLM Backbone 실행: 이미지+텍스트 → 멀티모달 특징 추출
+        backbone_outputs = self.backbone(backbone_inputs)
+        #    backbone_features: [B, S, 2048]
+
+        # 3. Action Head 실행: Flow Matching으로 loss 계산
+        action_outputs = self.action_head(backbone_outputs, action_inputs)
+        #    loss: scalar (MSE)
+
+        return action_outputs
 ```
 
-### 5.2 Forward Pass (Training)
+### 5.2 Eagle Backbone — 이미지-텍스트 융합
+
+**파일:** `gr00t/model/modules/eagle_backbone.py` 라인 105-120
 
 ```python
-def forward(self, inputs: dict):
-    """
-    inputs:
-        - input_ids: [B, seq_len]
-        - pixel_values: [B, num_imgs, 3, H, W]
-        - attention_mask: [B, seq_len]
-        - state: [B, max_state_dim]
-        - action: [B, action_horizon, max_action_dim]
-        - action_mask: [B, action_horizon, max_action_dim]
-        - embodiment_id: [B]
-    """
-    # 1. Prepare inputs
-    backbone_inputs, action_inputs = self.prepare_input(inputs)
-    
-    # 2. Backbone forward (Vision-Language encoding)
-    backbone_outputs = self.backbone(backbone_inputs)
-    # Returns:
-    #   - backbone_features: [B, seq_len, 2048]
-    #   - backbone_attention_mask: [B, seq_len]
-    #   - image_mask: [B, seq_len]
-    
-    # 3. Action head forward (Action prediction)
-    action_outputs = self.action_head(backbone_outputs, action_inputs)
-    # Returns:
-    #   - loss: scalar
-    #   - action_loss: [B, T, D] (for logging)
-    
-    return action_outputs
+class EagleBackbone(torch.nn.Module):
+    def forward(self, vl_input: BatchFeature) -> BatchFeature:
+        self.set_frozen_modules_to_eval_mode()
+
+        # VLM에 input_ids, attention_mask, pixel_values 전달
+        # 내부적으로 이미지 토큰을 Vision 임베딩으로 교체 후 LLM 통과
+        outputs = self.model(**vl_input, output_hidden_states=True)
+        outputs = outputs["hidden_states"][-1]  # 마지막 hidden state
+
+        # 이미지 토큰 위치 마스크 생성 (AlternateVLDiT에서 사용)
+        image_mask = vl_input["input_ids"] == self.model.config.image_token_index
+
+        return BatchFeature(data={
+            "backbone_features": outputs,        # [B, S, 2048]
+            "backbone_attention_mask": attention_mask,
+            "image_mask": image_mask,            # AlternateVLDiT를 위한 마스크
+        })
 ```
 
-### 5.3 Inference (Action Generation)
+### 5.3 Action Head — Flow Matching 학습
+
+**파일:** `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` 라인 148-256
+
+```python
+class Gr00tN1d6ActionHead(nn.Module):
+    def forward(self, backbone_output, action_input) -> BatchFeature:
+        # 1. VLM 출력 정규화
+        vl_embeds = self.vlln(backbone_output.backbone_features)  # [B, S, 2048]
+
+        # 2. 상태 인코딩 (embodiment별 가중치)
+        state_features = self.state_encoder(
+            action_input.state, embodiment_id  # [B, 1, 29] → [B, 1, 1536]
+        )
+
+        # 3. Flow Matching: 노이즈 보간 + velocity 목표 생성
+        noise = torch.randn(actions.shape)
+        t = self.sample_time(B, device, dtype)  # Beta(1.5, 1.0)
+        noisy_trajectory = (1 - t) * noise + t * actions
+        velocity = actions - noise  # 학습 목표
+
+        # 4. 노이즈 액션 인코딩
+        action_features = self.action_encoder(
+            noisy_trajectory, t_discretized, embodiment_id  # [B, 16, 29] → [B, 16, 1536]
+        )
+
+        # 5. State + Action 결합
+        sa_embs = torch.cat((state_features, action_features), dim=1)  # [B, 17, 1536]
+
+        # 6. AlternateVLDiT (32-layer): Cross-attn 조건화
+        model_output = self.model(
+            hidden_states=sa_embs,              # [B, 17, 1536]
+            encoder_hidden_states=vl_embeds,    # [B, S, 2048] (조건)
+            timestep=t_discretized,
+            image_mask=image_mask,              # 이미지/텍스트 교대 attend
+        )  # → [B, 17, 1024]
+
+        # 7. 디코딩 및 Loss 계산
+        pred = self.action_decoder(model_output, embodiment_id)  # [B, 17, 29]
+        pred_actions = pred[:, -16:]  # action 부분만 추출
+
+        action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
+        loss = action_loss.sum() / (action_mask.sum() + 1e-6)
+        return {"loss": loss, ...}
+```
+
+### 5.4 AlternateVLDiT — 이미지/텍스트 교대 Cross-Attention
+
+**파일:** `gr00t/model/modules/dit.py` 라인 289-364
+
+```python
+class AlternateVLDiT(DiT):
+    def forward(self, hidden_states, encoder_hidden_states, timestep,
+                image_mask, backbone_attention_mask, ...):
+        # 이미지/비이미지 토큰 마스크 생성
+        image_attention_mask = image_mask & backbone_attention_mask
+        non_image_attention_mask = (~image_mask) & backbone_attention_mask
+
+        for idx, block in enumerate(self.transformer_blocks):  # 32 블록
+            if idx % 2 == 1:
+                # 홀수: Self-Attention (state/action 간)
+                hidden_states = block(hidden_states, temb=temb)
+            else:
+                # 짝수: Cross-Attention
+                if idx % (2 * self.attend_text_every_n_blocks) == 0:
+                    # 텍스트 토큰에 attend
+                    mask = non_image_attention_mask
+                else:
+                    # 이미지 토큰에 attend
+                    mask = image_attention_mask
+                hidden_states = block(
+                    hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=mask,
+                    temb=temb,
+                )
+
+        # Adaptive LayerNorm으로 최종 출력 조건화
+        shift, scale = self.proj_out_1(F.silu(temb)).chunk(2, dim=1)
+        hidden_states = self.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
+        return self.proj_out_2(hidden_states)
+```
+
+### 5.5 추론 — Euler Denoising
+
+**파일:** `gr00t/model/gr00t_n1d6/gr00t_n1d6.py` 라인 288-364
 
 ```python
 @torch.no_grad()
-def get_action(self, inputs: dict):
-    """
-    inputs:
-        - input_ids: [B, seq_len]
-        - pixel_values: [B, num_imgs, 3, H, W]
-        - attention_mask: [B, seq_len]
-        - state: [B, state_dim]
-        - embodiment_id: [B]
-    
-    Returns:
-        - action_pred: [B, action_horizon, action_dim]
-    """
-    # 1. Encode vision-language
-    backbone_inputs, action_inputs = self.prepare_input(inputs)
-    backbone_outputs = self.backbone(backbone_inputs)
-    
-    # 2. Encode state
-    features = self.action_head._encode_features(backbone_outputs, action_inputs)
-    state_features = features.state_features  # [B, 1, 1536]
-    vl_features = features.backbone_features  # [B, seq_len, 2048]
-    
-    # 3. Initialize random noise
-    actions = torch.randn([B, action_horizon, action_dim])
-    dt = 1.0 / self.num_inference_timesteps
-    
-    # 4. Iterative denoising
-    for t in range(self.num_inference_timesteps):
-        t_cont = t / self.num_inference_timesteps
-        t_discrete = int(t_cont * 1000)
-        
-        # Encode action
-        action_features = self.action_encoder(actions, t_discrete, embodiment_id)
-        
-        # Concatenate with state
-        sa_embeds = torch.cat([state_features, action_features], dim=1)
-        
-        # Run DiT
-        model_output = self.diffusion_model(
-            sa_embeds,
-            encoder_hidden_states=vl_features,
-            timestep=t_discrete
-        )
-        
-        # Decode velocity
-        pred_velocity = self.action_decoder(model_output, embodiment_id)
-        pred_velocity = pred_velocity[:, -action_horizon:, :]
-        
-        # Update actions (Euler step)
-        actions = actions + dt * pred_velocity
-    
-    # 5. Unnormalize and convert to absolute
-    actions = processor.decode_action(actions, embodiment_tag, state)
-    
-    return {"action_pred": actions}
-```
+def get_action_with_features(self, backbone_features, state_features, embodiment_id, ...):
+    # 순수 노이즈에서 시작
+    actions = torch.randn([B, 16, action_dim])
+    dt = 1.0 / 4  # 4 스텝 추론
 
-### 5.4 Data Preprocessing (Processor)
+    for t in range(4):
+        t_cont = t / 4.0                           # 0.0, 0.25, 0.5, 0.75
+        t_disc = int(t_cont * 1000)                # 0, 250, 500, 750
 
-```python
-class Gr00tN1d6Processor:
-    def __call__(self, messages: list[dict]):
-        """
-        messages: [
-            {
-                "content": {
-                    "images": {"camera_0": [PIL.Image, ...], ...},
-                    "text": "pick up the apple",
-                    "states": {"joint_positions": np.array([...])},
-                    "actions": {"joint_positions": np.array([[...], ...])}
-                    "embodiment": EmbodimentTag.LIBERO_PANDA
-                }
-            }
-        ]
-        """
-        content = messages[0]["content"]
-        
-        # 1. Normalize state and action
-        normalized_states, normalized_actions = \
-            self.state_action_processor.apply(
-                state=content.states,
-                action=content.actions,
-                embodiment_tag=content.embodiment
-            )
-        
-        # 2. Image augmentation and stacking
-        images = []
-        for view in image_keys:
-            transformed = [self.image_transform(img) for img in content.images[view]]
-            images.append(torch.stack(transformed))
-        stacked_images = torch.stack(images).flatten(0, 1)  # [T*V, C, H, W]
-        
-        # 3. Language processing
-        language = content.text.lower()
-        language = re.sub(r"[^\w\s]", "", language)  # Remove punctuation
-        
-        # 4. VLM preprocessing (tokenization)
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": language},
-                    *[{"type": "image", "image": img} for img in stacked_images]
-                ]
-            }
-        ]
-        text = self.processor.apply_chat_template(conversation)
-        
-        # 5. Padding and batching
-        return {
-            "vlm_content": {
-                "text": text,
-                "images": stacked_images,
-                "conversation": conversation
-            },
-            "state": normalized_states,      # [state_dim]
-            "action": normalized_actions,    # [action_horizon, action_dim]
-            "action_mask": action_mask,      # [action_horizon, action_dim]
-            "embodiment_id": embodiment_id   # scalar
-        }
-```
+        action_features = self.action_encoder(actions, t_disc, embodiment_id)
+        sa_embs = torch.cat((state_features, action_features), dim=1)
+        model_output = self.model(sa_embs, backbone_features, t_disc, ...)
+        pred = self.action_decoder(model_output, embodiment_id)
+        pred_velocity = pred[:, -16:]
 
-### 5.5 Training Script (Fine-tuning)
+        actions = actions + dt * pred_velocity      # Euler 적분
 
-```python
-# Launch command
-"""
-CUDA_VISIBLE_DEVICES=0 uv run python gr00t/experiment/launch_finetune.py \
-    --base-model-path nvidia/GR00T-N1.6-3B \
-    --dataset-path /path/to/lerobot_dataset \
-    --embodiment-tag LIBERO_PANDA \
-    --modality-config-path examples/LIBERO/modality.json \
-    --output-dir outputs/libero_finetune \
-    --num-gpus 1 \
-    --global-batch-size 32 \
-    --max-steps 2000 \
-    --save-steps 500 \
-    --learning-rate 1e-4 \
-    --use-wandb
-"""
-
-# Core training loop (simplified)
-def run(config):
-    # 1. Setup model and dataset
-    model = Gr00tN1d6(config.model)
-    processor = Gr00tN1d6Processor(config.model.processor_kwargs)
-    train_dataset = ShardedMixtureDataset(config.data, processor)
-    
-    # 2. Setup trainer
-    trainer = Gr00tTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        data_collator=processor.collator
-    )
-    
-    # 3. Train
-    trainer.train(resume_from_checkpoint=config.training.start_from_checkpoint)
-    
-    # 4. Save
-    trainer.save_model(config.training.output_dir)
-    processor.save_pretrained(config.training.output_dir)
+    return actions  # [B, 16, action_dim]
 ```
 
 ---
 
-## 요약
+## 부록: 모델 파라미터 요약
 
-### 모델 구조 핵심 요약
+| 파라미터 | 기본값 | 설명 |
+|---------|--------|------|
+| `backbone_embedding_dim` | 2048 | VLM 출력 차원 |
+| `hidden_size` | 1024 | DiT 내부 및 decoder 차원 |
+| `input_embedding_dim` | 1536 | State/Action 인코딩 차원 (= DiT inner_dim: 32 heads * 48 dim) |
+| `action_horizon` | 16 | 예측할 미래 액션 스텝 수 |
+| `max_action_dim` | 29 | 최대 액션 차원 |
+| `max_state_dim` | 29 | 최대 상태 차원 |
+| `max_num_embodiments` | 32 | 지원 가능한 최대 로봇 종류 수 |
+| `num_inference_timesteps` | 4 | 추론 시 디노이징 스텝 수 |
+| `diffusion num_layers` | 32 | DiT 레이어 수 (N1.5: 16) |
+| `diffusion num_attention_heads` | 32 | DiT 어텐션 헤드 수 |
+| `diffusion attention_head_dim` | 48 | DiT 헤드 차원 |
+| `noise_beta_alpha` | 1.5 | 시간 샘플링 Beta 분포 alpha |
+| `noise_beta_beta` | 1.0 | 시간 샘플링 Beta 분포 beta |
+| `select_layer` | 16 | VLM에서 사용할 LLM 레이어 수 |
+| `tune_top_llm_layers` | 4 | 학습할 상위 LLM 레이어 수 |
 
-```
-[Input]
-  Images (multi-view, multi-timestep) → Vision Encoder (SigLIP)
-  Text (task description) → Tokenizer
-  State (robot joint positions) → State Encoder (embodiment-specific MLP)
-                                   ↓
-[Backbone: EagleBackbone]
-  Vision Features + Text Tokens → Language Model (16 layers, top 4 tunable)
-                                   ↓
-  VL Unified Embeddings [B, seq_len, 2048]
-                                   ↓
-[Action Head: Gr00tN1d6ActionHead]
-  State Embedding [B, 1, 1536]
-  + Noisy Action Embedding [B, 16, 1536]
-                                   ↓
-  32-Layer Diffusion Transformer (AlternateVLDiT)
-    - Cross-attention to VL features (alternating image/text)
-    - Self-attention
-    - Timestep conditioning (flow matching)
-                                   ↓
-  Action Decoder (embodiment-specific MLP)
-                                   ↓
-[Output]
-  Velocity Prediction [B, 16, action_dim]
-  → Iterative denoising (4 steps) → Final Actions
-```
+---
 
-### 학습 특징
-
-1. **Flow Matching Loss**: Velocity prediction in interpolated space
-2. **Selective Fine-tuning**: Backbone mostly frozen, top LLM layers + DiT tunable
-3. **Multi-Embodiment**: Separate projectors for each robot platform
-4. **State-Relative Actions**: Better generalization across starting poses
-5. **Efficient Inference**: 4 denoising steps, 22-27 Hz on RTX 4090/5090
-
-### 주요 혁신점 (N1.6 vs N1.5)
-
-1. **2x Deeper DiT**: 16 → 32 layers
-2. **No Adapter**: Top LLM layers directly tuned (removed 4-layer adapter)
-3. **Alternate VL Attention**: Separate image and text token attention
-4. **Relative Actions**: Default state-relative action space
-5. **Any-Resolution Vision**: Eagle VLM's flexible resolution support
-
-이 보고서는 GR00T N1.6 모델의 전체 구현을 코드 레벨에서 분석한 내용입니다.
+*본 보고서는 Isaac-GR00T 리포지토리의 코드를 직접 분석하여 작성되었습니다.*
